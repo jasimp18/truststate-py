@@ -1,23 +1,48 @@
 # TrustState Python SDK
 
-[![PyPI version](https://img.shields.io/badge/pypi-0.1.0-blue)](https://github.com/MyreneBot/truststate-py)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![TrustState API](https://img.shields.io/badge/TrustState-API%20v1-green)](https://truststate-api.apps.trustchainlabs.com)
 
-Python SDK for **[TrustState](https://trustchainlabs.com)** — real-time compliance validation and immutable audit trails for AI agents and financial systems.
+Python SDK for **[TrustState](https://trustchainlabs.com)** — real-time compliance validation, policy enforcement, and immutable audit trails for AI agents, financial systems, and automated workflows.
+
+---
+
+## What is TrustState?
+
+TrustState is a compliance infrastructure platform. It lets you define **schemas** (what your data must look like) and **policies** (what rules it must follow), then validate any event or decision against them in real time — with cryptographic proof of every check.
+
+Use it to:
+- Ensure AI agent outputs comply with your SOPs before delivery
+- Validate financial transactions against regulatory rules
+- Prove that every decision in an automated workflow was checked and logged
 
 ---
 
 ## Installation
 
 ```bash
-# Not yet on PyPI — install directly from GitHub:
-pip install git+https://github.com/MyreneBot/truststate-py.git
-
-# Or clone and install locally:
-git clone https://github.com/MyreneBot/truststate-py.git
-pip install -e truststate-py/
+# Install from GitHub (PyPI listing coming soon)
+pip install git+https://github.com/jasimp18/truststate-py.git
 ```
+
+Or clone and install locally:
+```bash
+git clone https://github.com/jasimp18/truststate-py.git
+cd truststate-py
+pip install -e .
+```
+
+**Requirements:** Python 3.9+, `httpx>=0.27`
+
+---
+
+## Getting an API Key
+
+1. Log in to your TrustState dashboard at [tstate.apps.trustchainlabs.com](https://tstate.apps.trustchainlabs.com)
+2. Go to **Settings → API Keys**
+3. Click **New API Key**, give it a label (e.g. `"My AI Agent"`)
+4. Copy the key — it is shown **only once**
 
 ---
 
@@ -27,135 +52,261 @@ pip install -e truststate-py/
 import asyncio
 from truststate import TrustStateClient
 
-client = TrustStateClient(api_key="your-api-key")
+ts = TrustStateClient(api_key="ts_your_key_here")
 
 async def main():
-    result = await client.check(
+    result = await ts.check(
         entity_type="AgentResponse",
-        data={"responseText": "Portfolio rebalanced.", "confidenceScore": 0.92},
+        data={
+            "responseText": "Your loan application is under review.",
+            "confidenceScore": 0.92,
+            "disclaimer": "This is not financial advice.",
+            "language": "en"
+        }
     )
+
     if result.passed:
-        print(f"✅ Passed — record_id: {result.record_id}")
+        print(f"✅ Compliant — Record ID: {result.record_id}")
     else:
-        print(f"❌ Failed — reason: {result.fail_reason} (step {result.failed_step})")
+        print(f"❌ Blocked — {result.fail_reason}")
 
 asyncio.run(main())
 ```
 
-### Decorator Usage
+---
 
-Wrap any async function so its return value is automatically checked:
+## Core Concepts
+
+Before using the SDK, set up your schema and policy in the TrustState dashboard:
+
+| Concept | What it is | Example |
+|---|---|---|
+| **Entity Type** | The name for the type of data you're validating | `AgentResponse`, `Transaction` |
+| **Schema** | Defines the required fields and their types | `confidenceScore` must be a number |
+| **Policy** | Defines the business rules | `confidenceScore` must be ≥ 0.7 |
+| **Record** | A passed validation — cryptographically signed | Stored in Registry |
+| **Violation** | A failed validation | Stored in Violations log |
+
+---
+
+## Usage
+
+### 1. Single check
+
+```python
+from truststate import TrustStateClient
+
+ts = TrustStateClient(
+    api_key="ts_your_key_here",
+    base_url="https://truststate-api.apps.trustchainlabs.com",  # default
+    default_schema_version="1.0",
+    default_actor_id="agent-001",
+)
+
+result = await ts.check(
+    entity_type="AgentResponse",
+    data={
+        "responseText": "Here is your account summary.",
+        "confidenceScore": 0.88,
+        "disclaimer": "For informational purposes only.",
+        "language": "en"
+    },
+    action="CREATE",                  # optional, defaults to CREATE
+    entity_id="session-abc-turn-1",  # optional, auto-generated if omitted
+    schema_version="1.0",             # optional, uses default_schema_version
+    actor_id="agent-001",             # optional, uses default_actor_id
+)
+
+print(result.passed)       # True / False
+print(result.record_id)    # "3fa85f64-..." (if passed)
+print(result.fail_reason)  # "Policy: min-confidence violated" (if failed)
+print(result.failed_step)  # 8 (schema) or 9 (policy)
+```
+
+### 2. Batch check
+
+Submit multiple items in a single call — efficient for high-volume agents or transaction feeds.
+
+```python
+results = await ts.check_batch(
+    items=[
+        {
+            "entity_type": "AgentResponse",
+            "data": {"responseText": "...", "confidenceScore": 0.9, "disclaimer": "...", "language": "en"},
+            "entity_id": "session-001-turn-1"
+        },
+        {
+            "entity_type": "AgentResponse",
+            "data": {"responseText": "...", "confidenceScore": 0.4, "disclaimer": "...", "language": "en"},
+            "entity_id": "session-002-turn-1"
+        }
+    ],
+    default_schema_version="1.0",
+    default_actor_id="agent-batch"
+)
+
+print(f"Batch: {results.accepted}/{results.total} passed")
+for r in results.results:
+    status = "✅" if r.passed else "❌"
+    print(f"  {status} {r.entity_id} — {r.fail_reason or r.record_id}")
+```
+
+### 3. Verify a past record
+
+Retrieve and verify a previously submitted record by its ID:
+
+```python
+proof = await ts.verify(
+    record_id="3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    bearer_token="your_jwt_token"
+)
+print(proof)
+```
+
+---
+
+## The `@compliant` Decorator
+
+Wrap any async function so its return value is automatically submitted to TrustState before being returned to the caller. The function is blocked if compliance fails.
 
 ```python
 from truststate import TrustStateClient, compliant
 
-ts = TrustStateClient(api_key="your-api-key")
+ts = TrustStateClient(api_key="ts_your_key_here")
 
-@compliant(ts, entity_type="AgentResponse", action="CREATE", on_fail="raise")
-async def generate_response(customer_id: str) -> dict:
+@compliant(client=ts, entity_type="AgentResponse", action="CREATE")
+async def generate_customer_response(customer_id: str, query: str) -> dict:
+    # Your AI agent logic here
+    response = await llm.generate(query)
     return {
-        "responseText": "Your account balance is RM 10,400.",
-        "confidenceScore": 0.98,
+        "responseText": response,
+        "confidenceScore": 0.91,
+        "disclaimer": "This is not financial advice.",
+        "language": "en",
+        "customerId": customer_id
     }
 
-# Will raise TrustStateError if compliance check fails
-response = await generate_response("CUST-001")
+# Usage — TrustState check happens automatically
+result = await generate_customer_response("cust-001", "What is my balance?")
 ```
 
-### Batch Submission
+**`on_fail` options:**
+
+| Value | Behaviour |
+|---|---|
+| `"raise"` (default) | Raises `TrustStateError` if check fails |
+| `"warn"` | Logs a warning, returns the value anyway |
+| `"return_none"` | Returns `None` silently on failure |
 
 ```python
-results = await ts.check_batch([
-    {"entity_type": "Transaction", "data": {"amount": 500, "currency": "MYR"}},
-    {"entity_type": "Transaction", "data": {"amount": 99000, "currency": "MYR"}},
-])
-print(f"Accepted: {results.accepted}/{results.total}")
+@compliant(client=ts, entity_type="AgentResponse", on_fail="warn")
+async def generate_response(query: str) -> dict:
+    ...
 ```
 
-### FastAPI Middleware
+---
+
+## FastAPI Middleware
+
+Automatically validate all requests to your API against TrustState before they reach your route handler.
 
 ```python
 from fastapi import FastAPI
 from truststate import TrustStateClient, TrustStateMiddleware
 
 app = FastAPI()
-client = TrustStateClient(api_key="your-api-key")
-app.add_middleware(TrustStateMiddleware, client=client)
+ts = TrustStateClient(api_key="ts_your_key_here")
 
-# Any request with X-Compliance-Entity-Type header will be validated.
-# Failed checks return HTTP 422.
+app.add_middleware(
+    TrustStateMiddleware,
+    client=ts,
+    entity_type_header="X-Compliance-Entity-Type",  # set this header on requests
+    action_header="X-Compliance-Action",
+)
+
+@app.post("/agent/respond")
+async def respond(body: dict):
+    # TrustState has already validated the request body
+    # If it failed, a 422 was returned before reaching here
+    return {"status": "ok"}
 ```
+
+Requests must include the header `X-Compliance-Entity-Type: AgentResponse` to trigger validation. Requests without the header pass through untouched.
 
 ---
 
 ## Mock Mode
 
-Mock mode lets you develop and test without an API connection. No network calls are made.
+Develop and test without connecting to the TrustState API. Zero network calls.
 
 ```python
-client = TrustStateClient(
-    api_key="any-value",
+ts = TrustStateClient(
+    api_key="",
     mock=True,
-    mock_pass_rate=0.8,  # 80% of checks pass; 20% fail
+    mock_pass_rate=1.0   # 1.0 = always pass, 0.0 = always fail, 0.8 = 80% pass
 )
 
-result = await client.check("AgentResponse", {"text": "hello"})
-assert result.mock is True
+result = await ts.check("AgentResponse", {"responseText": "Test"})
+print(result.passed)  # True
+print(result.mock)    # True
 ```
 
-**Use cases:**
-- Unit tests (no API key needed)
-- CI pipelines
-- Local development without credentials
-- Demonstrating the SDK offline
+Useful for:
+- Unit tests without API credentials
+- CI/CD pipelines
+- Local development before schemas/policies are set up
 
 ---
 
-## API Reference
+## Error Handling
 
-### `TrustStateClient(api_key, ...)`
+```python
+from truststate import TrustStateClient, TrustStateError
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `api_key` | `str` | required | Your TrustState API key |
-| `base_url` | `str` | `https://truststate-api.apps.trustchainlabs.com` | API base URL |
-| `default_schema_version` | `str` | `"1.0"` | Schema version for submissions |
-| `default_actor_id` | `str` | `""` | Actor ID for audit trail |
-| `mock` | `bool` | `False` | Enable mock mode |
-| `mock_pass_rate` | `float` | `1.0` | Probability of passing in mock mode |
-| `timeout` | `int` | `30` | HTTP timeout in seconds |
+ts = TrustStateClient(api_key="ts_your_key_here")
 
-### `await client.check(entity_type, data, ...)`
+try:
+    result = await ts.check("AgentResponse", data)
+    if not result.passed:
+        # Validation ran, but data failed policy/schema
+        handle_violation(result.fail_reason, result.failed_step)
+except TrustStateError as e:
+    # HTTP-level error (auth failure, network issue, server error)
+    print(f"TrustState error {e.status_code}: {e}")
+```
 
-Submit a single record for compliance validation.
+**`failed_step` values:**
 
-Returns: `ComplianceResult`
-
-### `await client.check_batch(items, ...)`
-
-Submit multiple records in one API call.
-
-Returns: `BatchResult`
-
-### `await client.verify(record_id, bearer_token)`
-
-Retrieve an immutable compliance record from the ledger.
-
-Returns: `dict`
+| Step | Meaning |
+|---|---|
+| `8` | Schema validation failed — data shape/type is wrong |
+| `9` | Policy evaluation failed — data violated a business rule |
 
 ---
 
-## ComplianceResult Fields
+## Running the Examples
 
-| Field | Type | Description |
-|---|---|---|
-| `passed` | `bool` | True if all checks passed |
-| `record_id` | `Optional[str]` | Immutable ledger ID (set only when passed) |
-| `request_id` | `str` | Unique API request ID |
-| `entity_id` | `str` | The entity identifier |
-| `fail_reason` | `Optional[str]` | Human-readable failure reason |
-| `failed_step` | `Optional[int]` | Step that failed (8=schema, 9=policy) |
-| `mock` | `bool` | True when result is synthetic (mock mode) |
+```bash
+git clone https://github.com/jasimp18/truststate-py.git
+cd truststate-py
+pip install -e .
+
+# AI agent demo (uses mock mode if no API key set)
+export TRUSTSTATE_API_KEY="ts_your_key"
+python examples/ai_agent_demo.py
+
+# CIMB-style batch transaction feed
+python examples/batch_feed.py
+```
+
+---
+
+## Running Tests
+
+```bash
+pip install pytest pytest-asyncio
+pytest tests/
+```
 
 ---
 
@@ -163,12 +314,29 @@ Returns: `dict`
 
 | SDK Version | TrustState API |
 |---|---|
-| 0.1.x | v1 |
+| `0.1.x` | API v1 |
 
 ---
 
-## Platform
+## Roadmap
 
-Built for [TrustState](https://trustchainlabs.com) by [TrustChain Labs](https://trustchainlabs.com).
+- [ ] Publish to PyPI (`pip install truststate`)
+- [ ] Schema caching (avoid re-fetching on every call)
+- [ ] Django middleware
+- [ ] Sync client (non-async) for simpler integrations
+- [ ] LangChain callback integration
 
-TrustState provides real-time compliance validation and immutable audit trails for AI agents, financial transactions, and regulated workflows.
+---
+
+## Links
+
+- **TrustState Platform:** [tstate.apps.trustchainlabs.com](https://tstate.apps.trustchainlabs.com)
+- **API Reference:** [truststate-api.apps.trustchainlabs.com/docs](https://truststate-api.apps.trustchainlabs.com/docs)
+- **JS/TS SDK:** [github.com/jasimp18/truststate-js](https://github.com/jasimp18/truststate-js)
+- **TrustChain Labs:** [trustchainlabs.com](https://trustchainlabs.com)
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE)
