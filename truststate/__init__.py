@@ -22,7 +22,7 @@ Basic usage::
 """
 
 from .client import TrustStateClient
-from .types import ComplianceResult, BatchResult
+from .types import ComplianceResult, BatchResult, EvidenceItem
 from .decorators import compliant
 from .middleware import TrustStateMiddleware
 from .exceptions import TrustStateError
@@ -31,9 +31,10 @@ __all__ = [
     "TrustStateClient",
     "ComplianceResult",
     "BatchResult",
+    "EvidenceItem",
     "compliant",
     "TrustStateMiddleware",
     "TrustStateError",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

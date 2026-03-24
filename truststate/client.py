@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from .exceptions import TrustStateError
-from .types import BatchResult, ComplianceResult
+from .types import BatchResult, ComplianceResult, EvidenceItem
 
 
 class TrustStateClient:
@@ -157,6 +157,205 @@ class TrustStateClient:
         response_json = await self._post("/v1/write/batch", payload)
         return self._parse_batch_response(response_json)
 
+    # ------------------------------------------------------------------
+    # BYOP Evidence fetch helpers
+    # ------------------------------------------------------------------
+
+    async def fetch_fx_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        provider_id: str = "reuters-fx",
+        max_age_seconds: int = 300,
+    ) -> EvidenceItem:
+        """Fetch an FX rate oracle evidence item.
+
+        In mock mode returns a deterministic stub value (MYR/USD = 4.72).
+
+        Args:
+            from_currency: Source currency code (e.g. "MYR").
+            to_currency:   Target currency code (e.g. "USD").
+            provider_id:   Oracle provider ID (default "reuters-fx").
+            max_age_seconds: Max acceptable age in seconds (default 300).
+
+        Returns:
+            EvidenceItem ready to pass to check() or check_batch().
+        """
+        subject = {"from": from_currency, "to": to_currency}
+        if self._mock:
+            stub_rates = {"MYR_USD": 0.2119, "USD_MYR": 4.72, "EUR_USD": 1.085, "GBP_USD": 1.267}
+            key = f"{from_currency}_{to_currency}"
+            value = stub_rates.get(key, 1.0)
+            return EvidenceItem(
+                provider_id=provider_id,
+                provider_type="fx_rate",
+                subject=subject,
+                observed_value=value,
+                observed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                max_age_seconds=max_age_seconds,
+                mock=True,
+            )
+        data = await self._get(f"/v1/oracle/fx-rate?from={from_currency}&to={to_currency}&providerId={provider_id}")
+        return EvidenceItem(
+            provider_id=data.get("providerId", provider_id),
+            provider_type="fx_rate",
+            subject=subject,
+            observed_value=data["observedValue"],
+            observed_at=data["observedAt"],
+            max_age_seconds=max_age_seconds,
+            proof_hash=data.get("proofHash"),
+            raw_proof_uri=data.get("rawProofUri"),
+            attestation=data.get("attestation"),
+        )
+
+    async def fetch_kyc_status(
+        self,
+        subject_id: str,
+        provider_id: str = "sumsub-kyc",
+        max_age_seconds: int = 86400,
+    ) -> EvidenceItem:
+        """Fetch a KYC status oracle evidence item.
+
+        Args:
+            subject_id:    The entity/wallet/account being KYC-checked.
+            provider_id:   Oracle provider ID (default "sumsub-kyc").
+            max_age_seconds: Max acceptable age (default 86400 = 24h).
+        """
+        subject = {"id": subject_id}
+        if self._mock:
+            return EvidenceItem(
+                provider_id=provider_id,
+                provider_type="kyc_status",
+                subject=subject,
+                observed_value="PASS",
+                observed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                max_age_seconds=max_age_seconds,
+                mock=True,
+            )
+        data = await self._get(f"/v1/oracle/kyc-status?subjectId={subject_id}&providerId={provider_id}")
+        return EvidenceItem(
+            provider_id=data.get("providerId", provider_id),
+            provider_type="kyc_status",
+            subject=subject,
+            observed_value=data["observedValue"],
+            observed_at=data["observedAt"],
+            max_age_seconds=max_age_seconds,
+            proof_hash=data.get("proofHash"),
+            attestation=data.get("attestation"),
+        )
+
+    async def fetch_credit_score(
+        self,
+        subject_id: str,
+        provider_id: str = "coface-credit",
+        max_age_seconds: int = 86400,
+    ) -> EvidenceItem:
+        """Fetch a credit score oracle evidence item.
+
+        Args:
+            subject_id:    Entity being scored.
+            provider_id:   Oracle provider ID (default "coface-credit").
+            max_age_seconds: Max acceptable age (default 86400 = 24h).
+        """
+        subject = {"id": subject_id}
+        if self._mock:
+            return EvidenceItem(
+                provider_id=provider_id,
+                provider_type="credit_score",
+                subject=subject,
+                observed_value=720,
+                observed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                max_age_seconds=max_age_seconds,
+                mock=True,
+            )
+        data = await self._get(f"/v1/oracle/credit-score?subjectId={subject_id}&providerId={provider_id}")
+        return EvidenceItem(
+            provider_id=data.get("providerId", provider_id),
+            provider_type="credit_score",
+            subject=subject,
+            observed_value=data["observedValue"],
+            observed_at=data["observedAt"],
+            max_age_seconds=max_age_seconds,
+            proof_hash=data.get("proofHash"),
+            attestation=data.get("attestation"),
+        )
+
+    async def fetch_sanctions(
+        self,
+        subject_id: str,
+        provider_id: str = "refinitiv-sanct",
+        max_age_seconds: int = 3600,
+    ) -> EvidenceItem:
+        """Fetch a sanctions screening oracle evidence item."""
+        subject = {"id": subject_id}
+        if self._mock:
+            return EvidenceItem(
+                provider_id=provider_id,
+                provider_type="sanctions",
+                subject=subject,
+                observed_value="CLEAR",
+                observed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                max_age_seconds=max_age_seconds,
+                mock=True,
+            )
+        data = await self._get(f"/v1/oracle/sanctions?subjectId={subject_id}&providerId={provider_id}")
+        return EvidenceItem(
+            provider_id=data.get("providerId", provider_id),
+            provider_type="sanctions",
+            subject=subject,
+            observed_value=data["observedValue"],
+            observed_at=data["observedAt"],
+            max_age_seconds=max_age_seconds,
+            proof_hash=data.get("proofHash"),
+            attestation=data.get("attestation"),
+        )
+
+    async def check_with_evidence(
+        self,
+        entity_type: str,
+        data: Dict[str, Any],
+        evidence: List[EvidenceItem],
+        action: str = "CREATE",
+        entity_id: Optional[str] = None,
+        schema_version: Optional[str] = None,
+        actor_id: Optional[str] = None,
+    ) -> ComplianceResult:
+        """Submit a compliance check with oracle evidence attached.
+
+        Convenience wrapper around check() that serialises EvidenceItem objects
+        and bundles them in the write payload.
+
+        Example::
+
+            fx = await client.fetch_fx_rate("MYR", "USD")
+            kyc = await client.fetch_kyc_status("0x1234abcd")
+            result = await client.check_with_evidence(
+                "SukukBond",
+                {"issuerId": "...", "faceValue": 500000, "currency": "MYR"},
+                evidence=[fx, kyc],
+            )
+        """
+        eid = entity_id or str(uuid.uuid4())
+        schema_ver = schema_version or self._default_schema_version
+        actor = actor_id or self._default_actor_id
+
+        if self._mock:
+            return self._mock_single_result(eid)
+
+        payload = {
+            "records": [{
+                "entityType":    entity_type,
+                "data":          data,
+                "action":        action,
+                "entityId":      eid,
+                "schemaVersion": schema_ver,
+                "actorId":       actor,
+                "evidence":      [e.to_dict() for e in evidence],
+            }]
+        }
+        response_json = await self._post("/v1/write/batch", payload)
+        return self._parse_batch_response(response_json).results[0]
+
     async def verify(self, record_id: str, bearer_token: str) -> Dict[str, Any]:
         """Retrieve an immutable compliance record from the ledger.
 
@@ -189,6 +388,19 @@ class TrustStateClient:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _get(self, path: str) -> Dict[str, Any]:
+        """Make an authenticated GET request and return the JSON response body."""
+        url = f"{self._base_url}{path}"
+        headers = {"X-API-Key": self._api_key}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            try:
+                resp = await client.get(url, headers=headers)
+            except httpx.RequestError as exc:
+                raise TrustStateError(f"Network error: {exc}") from exc
+        if resp.status_code >= 400:
+            raise TrustStateError(f"API error {resp.status_code}: {resp.text}", resp.status_code)
+        return resp.json()
 
     async def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Make an authenticated POST request and return the JSON response body."""
